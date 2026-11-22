@@ -86,16 +86,16 @@ The database container listens on host port **5433** by default so it does not c
 
 ---
 
-##UI
-###Dashboard
+## UI
+### Dashboard
 
 <img width="1912" height="1130" alt="image" src="https://github.com/user-attachments/assets/aa1d40bb-29aa-4559-b44c-684c2d859efd" />
 
-###Tasks
+### Tasks
 
 <img width="1912" height="1113" alt="image" src="https://github.com/user-attachments/assets/411c4bbc-4c49-4dbd-9a18-9240acd9d63f" />
 
-###Board
+### Board
 
 <img width="1912" height="1651" alt="image" src="https://github.com/user-attachments/assets/6a6916c9-7cb5-4686-b5a9-87c1d7c87f13" />
 
