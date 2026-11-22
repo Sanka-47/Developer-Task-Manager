@@ -27,7 +27,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
           aria-hidden="true"
         />
         <div
-          className="absolute -right-20 bottom-0 h-80 w-80 rounded-full bg-indigo-400/10 blur-3xl"
+          className="absolute -right-20 bottom-0 h-80 w-80 rounded-full bg-blue-400/10 blur-3xl"
           aria-hidden="true"
         />
 
@@ -41,7 +41,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
             </p>
             <h1 className="text-balance text-4xl font-semibold leading-tight tracking-tight xl:text-5xl">
               Turn plans into
-              <span className="block bg-gradient-to-r from-indigo-300 via-violet-300 to-sky-300 bg-clip-text text-transparent">
+              <span className="block bg-gradient-to-r from-blue-300 via-sky-300 to-cyan-300 bg-clip-text text-transparent">
                 visible progress.
               </span>
             </h1>
