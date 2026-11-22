@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: taskapp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: taskapp
+      POSTGRES_PASSWORD: taskapp
+      POSTGRES_DB: taskapp
+    ports:
+      # Host port 5433 avoids clashing with an existing local PostgreSQL.
+      # Override with POSTGRES_PORT=5432 if that port is free on your machine.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - taskapp-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskapp -d taskapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  taskapp-db-data:

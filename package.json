@@ -1,0 +1,40 @@
+{
+  "name": "taskapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Full-stack task management application (Next.js + Express + PostgreSQL + Prisma)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "dev": "npm run build:shared && concurrently -k -n shared,api,web -c gray,blue,magenta \"npm:dev:shared\" \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:shared": "npm run dev -w @taskapp/shared",
+    "dev:api": "npm run dev -w @taskapp/api",
+    "dev:web": "npm run dev -w @taskapp/web",
+    "build": "npm run build:shared && npm run build -w @taskapp/api && npm run build -w @taskapp/web",
+    "build:shared": "npm run build -w @taskapp/shared",
+    "start": "concurrently -k -n api,web -c blue,magenta \"npm:start:api\" \"npm:start:web\"",
+    "start:api": "npm run start -w @taskapp/api",
+    "start:web": "npm run start -w @taskapp/web",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "test": "npm run test -ws --if-present",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f db",
+    "db:migrate": "npm run prisma:migrate:dev -w @taskapp/api",
+    "db:deploy": "npm run prisma:migrate:deploy -w @taskapp/api",
+    "db:seed": "npm run db:seed -w @taskapp/api",
+    "db:reset": "npm run db:reset -w @taskapp/api",
+    "db:studio": "npm run prisma:studio -w @taskapp/api",
+    "setup": "node scripts/setup-env.mjs && npm install && npm run build:shared && npm run db:up && npm run db:migrate && npm run db:seed",
+    "setup:env": "node scripts/setup-env.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7",
+    "jsdom": "^26.1.0"
+  }
+}
