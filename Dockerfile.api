@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1.7
+
+ARG NODE_VERSION=22
+
+# ---------------------------------------------------------------------------
+# Base image: Alpine + OpenSSL/libc compatibility for Prisma engines.
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-alpine AS base
+RUN apk add --no-cache openssl libc6-compat
+WORKDIR /app
+
+# ---------------------------------------------------------------------------
+# Install all workspace dependencies once for building.
+# ---------------------------------------------------------------------------
+FROM base AS deps
+COPY package.json package-lock.json .npmrc ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/shared/package.json packages/shared/package.json
+RUN npm ci
+
+# ---------------------------------------------------------------------------
+# Compile the shared package and the API.
+# ---------------------------------------------------------------------------
+FROM deps AS builder
+COPY tsconfig.base.json ./
+COPY packages/shared packages/shared
+COPY apps/api apps/api
+RUN npm run build:shared && npm run build -w @taskapp/api
+
+# ---------------------------------------------------------------------------
+# Production dependencies only. The generated Prisma client is copied from
+# the builder because it is platform-specific and must match the runtime.
+# ---------------------------------------------------------------------------
+FROM base AS prod-deps
+COPY package.json package-lock.json .npmrc ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/shared/package.json packages/shared/package.json
+RUN npm ci --omit=dev
+
+# ---------------------------------------------------------------------------
+# API runtime.
+# ---------------------------------------------------------------------------
+FROM base AS runner
+ENV NODE_ENV=production
+ENV PORT=4200
+WORKDIR /app
+
+COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /app/apps/api/dist ./apps/api/dist
+COPY --from=builder --chown=node:node /app/apps/api/prisma ./apps/api/prisma
+COPY --from=builder --chown=node:node /app/apps/api/package.json ./apps/api/package.json
+COPY --from=builder --chown=node:node /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder --chown=node:node /app/packages/shared/package.json ./packages/shared/package.json
+COPY --from=builder --chown=node:node /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder --chown=node:node /app/node_modules/@prisma/client ./node_modules/@prisma/client
+
+USER node
+EXPOSE 4200
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:4200/api/v1/health >/dev/null || exit 1
+
+CMD ["node", "apps/api/dist/server.js"]
+
+# ---------------------------------------------------------------------------
+# One-off migration/seed image. It keeps dev dependencies because Prisma CLI
+# and the TypeScript seed runner are only needed for this short-lived job.
+# ---------------------------------------------------------------------------
+FROM deps AS migrator
+ENV NODE_ENV=production
+ENV PATH="/app/node_modules/.bin:${PATH}"
+WORKDIR /app/apps/api
+
+COPY --from=builder --chown=node:node /app/apps/api/prisma ./prisma
+COPY --from=builder --chown=node:node /app/apps/api/package.json ./package.json
+COPY --from=builder --chown=node:node /app/node_modules/.prisma /app/node_modules/.prisma
+COPY --from=builder --chown=node:node /app/node_modules/@prisma/client /app/node_modules/@prisma/client
+
+USER node
+
+CMD ["npx", "prisma", "migrate", "deploy"]

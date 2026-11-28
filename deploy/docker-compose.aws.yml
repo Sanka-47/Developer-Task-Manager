@@ -1,0 +1,50 @@
+# EC2 runtime compose file. Terraform/user data supplies:
+#   ECR_REGISTRY, API_REPO, WEB_REPO, IMAGE_TAG, AWS_REGION and
+#   /opt/taskapp/api.env
+#
+# The ALB reaches the containers through the instance ports below. The app
+# security group only permits those ports from the ALB security group, so they
+# are never exposed directly to the internet.
+
+services:
+  api:
+    image: ${ECR_REGISTRY}/${API_REPO}:${IMAGE_TAG}
+    container_name: taskapp-api
+    restart: unless-stopped
+    env_file:
+      - /opt/taskapp/api.env
+    environment:
+      NODE_ENV: production
+      PORT: 4200
+      LOG_LEVEL: info
+    ports:
+      - "4200:4200"
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${LOG_GROUP_API}
+        awslogs-stream: api
+        awslogs-create-group: "false"
+
+  web:
+    image: ${ECR_REGISTRY}/${WEB_REPO}:${IMAGE_TAG}
+    container_name: taskapp-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3100
+      HOSTNAME: 0.0.0.0
+      API_ORIGIN: http://api:4200
+    ports:
+      - "3100:3100"
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: ${LOG_GROUP_WEB}
+        awslogs-stream: web
+        awslogs-create-group: "false"

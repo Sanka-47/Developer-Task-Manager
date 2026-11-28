@@ -1,0 +1,135 @@
+# Production-shaped local stack. It mirrors the AWS topology closely enough to
+# test images, migrations, health checks and direct-to-S3 uploads:
+#
+#   browser -> web (Next standalone) -> /api/* rewrite -> api -> PostgreSQL
+#                                                   \-> LocalStack S3
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up --build -d
+#   docker compose -f docker-compose.prod.yml run --rm migrate npx prisma db seed
+#   docker compose -f docker-compose.prod.yml down -v
+#
+# IMAGE_TAG should be a Git SHA in CI; `local` is only for this compose file.
+
+name: taskapp-prod
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: taskapp-prod-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: taskapp
+      POSTGRES_PASSWORD: taskapp
+      POSTGRES_DB: taskapp
+    ports:
+      - "${PROD_POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - taskapp-prod-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskapp -d taskapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3.8.1
+    container_name: taskapp-prod-localstack
+    restart: unless-stopped
+    environment:
+      SERVICES: s3
+      DEBUG: 0
+      PERSISTENCE: 1
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      # Host 4567 avoids clashing with a developer's local LocalStack on 4566.
+      - "${PROD_LOCALSTACK_PORT:-4567}:4566"
+    volumes:
+      - taskapp-prod-localstack-data:/var/lib/localstack
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init-s3.sh:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:4566/_localstack/health >/dev/null || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      target: migrator
+    image: taskapp-api-migrator:${IMAGE_TAG:-local}
+    container_name: taskapp-prod-migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://taskapp:taskapp@db:5432/taskapp?schema=public
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      target: runner
+    image: taskapp-api:${IMAGE_TAG:-local}
+    container_name: taskapp-prod-api
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4200
+      DATABASE_URL: postgresql://taskapp:taskapp@db:5432/taskapp?schema=public
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-only-change-me-6f2c1d9a4b7e8c3f5a1d2e9b4c7f8a3d}
+      JWT_ACCESS_TTL: 15m
+      REFRESH_TOKEN_TTL_DAYS: 30
+      CORS_ORIGINS: ${PROD_WEB_ORIGIN:-http://localhost:3101}
+      BCRYPT_ROUNDS: 12
+      LOG_LEVEL: info
+      AWS_REGION: us-east-1
+      S3_BUCKET: taskapp-attachments
+      S3_ENDPOINT_URL: http://localstack:4566
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:${PROD_LOCALSTACK_PORT:-4567}
+      S3_FORCE_PATH_STYLE: "true"
+      S3_KEY_PREFIX: attachments
+      S3_UPLOAD_URL_TTL_SECONDS: 300
+      S3_DOWNLOAD_URL_TTL_SECONDS: 300
+      S3_MAX_FILE_BYTES: 26214400
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    ports:
+      - "${PROD_API_PORT:-4201}:4200"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      target: runner
+      args:
+        API_ORIGIN: http://api:4200
+    image: taskapp-web:${IMAGE_TAG:-local}
+    container_name: taskapp-prod-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3100
+      HOSTNAME: 0.0.0.0
+      API_ORIGIN: http://api:4200
+    ports:
+      - "${PROD_WEB_PORT:-3101}:3100"
+
+volumes:
+  taskapp-prod-db-data:
+  taskapp-prod-localstack-data:
