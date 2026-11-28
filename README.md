@@ -67,6 +67,8 @@ npm run docker:seed
 
 Stop it with `npm run docker:down`. The stack uses the isolated Compose project `taskapp-prod`, so it does not collide with the developer services on 3100/4200/5433/4566.
 
+The stack was rebuilt and verified on 2026-11-28. All containers became healthy, migrations and seed completed, and a smoke test passed for login, task CRUD, direct-to-S3 upload, upload completion, attachment listing, pre-signed download and deletion.
+
 ---
 
 ## AWS deployment

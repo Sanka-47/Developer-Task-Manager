@@ -3743,6 +3743,7 @@ Do these in order. Each one teaches a concept you will use in the real deploymen
 - [x] Add `.dockerignore`.
 - [x] Run both containers locally against PostgreSQL and LocalStack.
 - [x] Verify health checks and logs.
+- [x] Rebuild and re-verify the full stack on 2026-11-28: migrations, seed, login, task CRUD, direct-to-S3 upload, completion, listing, pre-signed download and deletion all passed.
 
 ### Phase 3 ? Terraform foundation
 

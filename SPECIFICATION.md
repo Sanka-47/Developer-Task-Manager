@@ -216,7 +216,7 @@ Goal: run the production-shaped app locally with Docker.
 * [x] `prisma migrate deploy` runs successfully in the migration image.
 * [x] Image tags use Git SHAs, not `latest`.
 
-> Container verification was completed before the Docker containers were removed to free disk space. The stack can be recreated with `npm run docker:build`, `npm run docker:up` and `npm run docker:seed` once Docker Desktop is running.
+> Container verification was repeated successfully on 2026-11-28 after the containers were recreated. The production-shaped stack built from commit `f99ef5e`, all four containers reported healthy, migrations and seed completed, and the smoke test passed for health checks, login, task CRUD, direct-to-S3 upload, upload completion, listing, pre-signed download and deletion. Recreate it with `npm run docker:build`, `npm run docker:up` and `npm run docker:seed`.
 
 ### 5.5 Phase 3 — Terraform foundation
 
