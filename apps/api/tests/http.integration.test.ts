@@ -1,8 +1,12 @@
 import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { MAX_ATTACHMENT_BYTES } from "@taskapp/shared";
+
 import type { AppContainer } from "../src/container";
 import { createApp } from "../src/app";
+import { AttachmentController } from "../src/modules/attachments/attachment.controller";
+import { AttachmentService } from "../src/modules/attachments/attachment.service";
 import { AuthController } from "../src/modules/auth/auth.controller";
 import { createAuthenticate } from "../src/modules/auth/auth.middleware";
 import { AuthService } from "../src/modules/auth/auth.service";
@@ -13,8 +17,10 @@ import { DashboardService } from "../src/modules/dashboard/dashboard.service";
 import { TaskController } from "../src/modules/tasks/task.controller";
 import { TaskService } from "../src/modules/tasks/task.service";
 import {
+  InMemoryAttachmentRepository,
   InMemoryAuthRepository,
   InMemoryDashboardRepository,
+  InMemoryFileStorage,
   InMemoryTaskRepository,
 } from "./helpers/in-memory-repositories";
 
@@ -28,12 +34,16 @@ interface TestContext {
   app: ReturnType<typeof createApp>;
   authRepository: InMemoryAuthRepository;
   taskRepository: InMemoryTaskRepository;
+  attachmentRepository: InMemoryAttachmentRepository;
+  fileStorage: InMemoryFileStorage;
 }
 
 function buildContext(): TestContext {
   const authRepository = new InMemoryAuthRepository();
   const taskRepository = new InMemoryTaskRepository();
   const dashboardRepository = new InMemoryDashboardRepository(taskRepository);
+  const attachmentRepository = new InMemoryAttachmentRepository(taskRepository);
+  const fileStorage = new InMemoryFileStorage();
 
   const tokens = new TokenService({
     secret: ACCESS_SECRET,
@@ -47,7 +57,19 @@ function buildContext(): TestContext {
     passwords,
     refreshTtlDays: 30,
   });
-  const taskService = new TaskService({ repository: taskRepository });
+  const attachmentService = new AttachmentService({
+    repository: attachmentRepository,
+    storage: fileStorage,
+    tasks: taskRepository,
+    uploadUrlTtlSeconds: 300,
+    downloadUrlTtlSeconds: 300,
+    maxFileBytes: MAX_ATTACHMENT_BYTES,
+    keyPrefix: "attachments",
+  });
+  const taskService = new TaskService({
+    repository: taskRepository,
+    attachments: attachmentService,
+  });
   const dashboardService = new DashboardService({
     repository: dashboardRepository,
   });
@@ -55,6 +77,7 @@ function buildContext(): TestContext {
   const container: AppContainer = {
     authController: new AuthController(authService),
     taskController: new TaskController(taskService),
+    attachmentController: new AttachmentController(attachmentService),
     dashboardController: new DashboardController(dashboardService),
     authenticate: createAuthenticate(tokens),
   };
@@ -63,6 +86,8 @@ function buildContext(): TestContext {
     app: createApp(container),
     authRepository,
     taskRepository,
+    attachmentRepository,
+    fileStorage,
   };
 }
 
@@ -530,6 +555,260 @@ describe("HTTP API integration", () => {
         .set("Authorization", bearer(owner.token))
         .expect(200);
       expect(ownerView.body.data.title).toBe("Private task");
+    });
+  });
+
+  describe("attachments", () => {
+    async function createTask(token: string): Promise<string> {
+      const response = await request(ctx.app)
+        .post(`${API}/tasks`)
+        .set("Authorization", bearer(token))
+        .send({ title: "Task with files" })
+        .expect(201);
+      return response.body.data.id as string;
+    }
+
+    it("requires authentication for attachment endpoints", async () => {
+      await request(ctx.app)
+        .get(`${API}/tasks/some-task/attachments`)
+        .expect(401);
+    });
+
+    it("creates a pre-signed upload, completes it and serves a download URL", async () => {
+      const { token } = await register(ctx.app);
+      const taskId = await createTask(token);
+
+      const created = await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(token))
+        .send({
+          fileName: "design brief.pdf",
+          contentType: "application/pdf",
+          sizeBytes: 12,
+        })
+        .expect(201);
+
+      const attachmentId = created.body.data.attachment.id as string;
+      expect(created.headers.location).toBe(
+        `${API}/tasks/${taskId}/attachments/${attachmentId}`,
+      );
+      expect(created.body.data).toMatchObject({
+        attachment: {
+          taskId,
+          fileName: "design brief.pdf",
+          contentType: "application/pdf",
+          sizeBytes: 12,
+          status: "PENDING",
+          uploadedAt: null,
+        },
+        uploadUrl: expect.stringContaining("storage.test"),
+        expiresAt: expect.any(String),
+      });
+
+      const record = ctx.attachmentRepository.attachments[0];
+      ctx.fileStorage.put(record.storageKey, 12, "application/pdf");
+
+      const completed = await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments/${attachmentId}/complete`)
+        .set("Authorization", bearer(token))
+        .expect(200);
+      expect(completed.body.data).toMatchObject({
+        id: attachmentId,
+        status: "UPLOADED",
+        uploadedAt: expect.any(String),
+      });
+
+      const list = await request(ctx.app)
+        .get(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(token))
+        .expect(200);
+      expect(list.body.data).toHaveLength(1);
+      expect(list.body.data[0].fileName).toBe("design brief.pdf");
+      expect(list.body.data[0]).not.toHaveProperty("storageKey");
+
+      const download = await request(ctx.app)
+        .get(`${API}/tasks/${taskId}/attachments/${attachmentId}/download-url`)
+        .set("Authorization", bearer(token))
+        .expect(200);
+      expect(download.body.data).toMatchObject({
+        url: expect.stringContaining(record.storageKey),
+        expiresAt: expect.any(String),
+      });
+
+      await request(ctx.app)
+        .delete(`${API}/tasks/${taskId}/attachments/${attachmentId}`)
+        .set("Authorization", bearer(token))
+        .expect(204);
+      expect(ctx.fileStorage.deletedKeys).toContain(record.storageKey);
+
+      const afterDelete = await request(ctx.app)
+        .get(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(token))
+        .expect(200);
+      expect(afterDelete.body.data).toEqual([]);
+    });
+
+    it("validates attachment metadata", async () => {
+      const { token } = await register(ctx.app);
+      const taskId = await createTask(token);
+
+      const unsupported = await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(token))
+        .send({
+          fileName: "payload.exe",
+          contentType: "application/x-msdownload",
+          sizeBytes: 10,
+        })
+        .expect(400);
+      expect(unsupported.body.error.details).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "contentType" }),
+        ]),
+      );
+
+      const oversized = await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(token))
+        .send({
+          fileName: "large.pdf",
+          contentType: "application/pdf",
+          sizeBytes: MAX_ATTACHMENT_BYTES + 1,
+        })
+        .expect(400);
+      expect(oversized.body.error.details).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "sizeBytes" }),
+        ]),
+      );
+    });
+
+    it("rejects completion when the object was not uploaded", async () => {
+      const { token } = await register(ctx.app);
+      const taskId = await createTask(token);
+
+      const created = await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(token))
+        .send({
+          fileName: "missing.txt",
+          contentType: "text/plain",
+          sizeBytes: 5,
+        })
+        .expect(201);
+
+      await request(ctx.app)
+        .post(
+          `${API}/tasks/${taskId}/attachments/${created.body.data.attachment.id}/complete`,
+        )
+        .set("Authorization", bearer(token))
+        .expect(409);
+
+      expect(ctx.attachmentRepository.attachments[0].status).toBe("FAILED");
+    });
+
+    it("rejects a size mismatch and marks the upload failed", async () => {
+      const { token } = await register(ctx.app);
+      const taskId = await createTask(token);
+
+      const created = await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(token))
+        .send({
+          fileName: "wrong-size.txt",
+          contentType: "text/plain",
+          sizeBytes: 10,
+        })
+        .expect(201);
+
+      const record = ctx.attachmentRepository.attachments[0];
+      ctx.fileStorage.put(record.storageKey, 9, "text/plain");
+
+      const response = await request(ctx.app)
+        .post(
+          `${API}/tasks/${taskId}/attachments/${created.body.data.attachment.id}/complete`,
+        )
+        .set("Authorization", bearer(token))
+        .expect(400);
+      expect(response.body.error.message).toMatch(/size/i);
+      expect(ctx.attachmentRepository.attachments[0].status).toBe("FAILED");
+      expect(ctx.fileStorage.deletedKeys).toContain(record.storageKey);
+    });
+
+    it("prevents users from accessing each other's attachments", async () => {
+      const owner = await register(ctx.app, { email: "files-owner@example.com" });
+      const other = await register(ctx.app, { email: "files-other@example.com" });
+      const taskId = await createTask(owner.token);
+
+      const created = await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(owner.token))
+        .send({
+          fileName: "private.pdf",
+          contentType: "application/pdf",
+          sizeBytes: 3,
+        })
+        .expect(201);
+      const attachmentId = created.body.data.attachment.id as string;
+      const record = ctx.attachmentRepository.attachments[0];
+      ctx.fileStorage.put(record.storageKey, 3, "application/pdf");
+      await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments/${attachmentId}/complete`)
+        .set("Authorization", bearer(owner.token))
+        .expect(200);
+
+      await request(ctx.app)
+        .get(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(other.token))
+        .expect(404);
+      await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(other.token))
+        .send({
+          fileName: "intrusion.txt",
+          contentType: "text/plain",
+          sizeBytes: 3,
+        })
+        .expect(404);
+      await request(ctx.app)
+        .get(`${API}/tasks/${taskId}/attachments/${attachmentId}/download-url`)
+        .set("Authorization", bearer(other.token))
+        .expect(404);
+      await request(ctx.app)
+        .delete(`${API}/tasks/${taskId}/attachments/${attachmentId}`)
+        .set("Authorization", bearer(other.token))
+        .expect(404);
+    });
+
+    it("removes attachment objects when a task is deleted", async () => {
+      const { token } = await register(ctx.app);
+      const taskId = await createTask(token);
+
+      const created = await request(ctx.app)
+        .post(`${API}/tasks/${taskId}/attachments`)
+        .set("Authorization", bearer(token))
+        .send({
+          fileName: "cleanup.txt",
+          contentType: "text/plain",
+          sizeBytes: 4,
+        })
+        .expect(201);
+      const record = ctx.attachmentRepository.attachments[0];
+      ctx.fileStorage.put(record.storageKey, 4, "text/plain");
+      await request(ctx.app)
+        .post(
+          `${API}/tasks/${taskId}/attachments/${created.body.data.attachment.id}/complete`,
+        )
+        .set("Authorization", bearer(token))
+        .expect(200);
+
+      await request(ctx.app)
+        .delete(`${API}/tasks/${taskId}`)
+        .set("Authorization", bearer(token))
+        .expect(204);
+
+      expect(ctx.fileStorage.deletedKeys).toContain(record.storageKey);
+      expect(ctx.attachmentRepository.attachments).toEqual([]);
     });
   });
 

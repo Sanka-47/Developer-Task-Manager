@@ -11,6 +11,17 @@ import type {
   UserRecord,
 } from "../../src/modules/auth/auth.repository";
 import type {
+  AttachmentRecord,
+  CreateAttachmentData,
+  IAttachmentRepository,
+} from "../../src/modules/attachments/attachment.repository";
+import type {
+  DownloadUrlOptions,
+  FileStorage,
+  StoredObjectMetadata,
+  UploadUrlOptions,
+} from "../../src/modules/attachments/file-storage";
+import type {
   DashboardData,
   IDashboardRepository,
 } from "../../src/modules/dashboard/dashboard.repository";
@@ -228,6 +239,156 @@ export class InMemoryTaskRepository implements ITaskRepository {
       items: matching.slice(skip, skip + filters.pageSize),
       total: matching.length,
     };
+  }
+}
+
+export class InMemoryAttachmentRepository implements IAttachmentRepository {
+  readonly attachments: AttachmentRecord[] = [];
+
+  constructor(private readonly tasks: InMemoryTaskRepository) {}
+
+  async create(data: CreateAttachmentData): Promise<AttachmentRecord> {
+    const now = new Date();
+    const attachment: AttachmentRecord = {
+      id: randomUUID(),
+      taskId: data.taskId,
+      storageKey: data.storageKey,
+      fileName: data.fileName,
+      contentType: data.contentType,
+      sizeBytes: data.sizeBytes,
+      status: data.status,
+      uploadedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.attachments.push(attachment);
+    return attachment;
+  }
+
+  async findByIdForUser(
+    id: string,
+    taskId: string,
+    userId: string,
+  ): Promise<AttachmentRecord | null> {
+    if (!(await this.tasks.findById(userId, taskId))) {
+      return null;
+    }
+    return (
+      this.attachments.find(
+        (attachment) =>
+          attachment.id === id && attachment.taskId === taskId,
+      ) ?? null
+    );
+  }
+
+  async findManyForTask(
+    taskId: string,
+    userId: string,
+  ): Promise<AttachmentRecord[]> {
+    if (!(await this.tasks.findById(userId, taskId))) {
+      return [];
+    }
+    return this.attachments.filter(
+      (attachment) => attachment.taskId === taskId,
+    );
+  }
+
+  async markUploaded(id: string): Promise<AttachmentRecord> {
+    const attachment = this.require(id);
+    const updated: AttachmentRecord = {
+      ...attachment,
+      status: "UPLOADED",
+      uploadedAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.replace(updated);
+    return updated;
+  }
+
+  async markFailed(id: string): Promise<AttachmentRecord> {
+    const attachment = this.require(id);
+    const updated: AttachmentRecord = {
+      ...attachment,
+      status: "FAILED",
+      updatedAt: new Date(),
+    };
+    this.replace(updated);
+    return updated;
+  }
+
+  async deleteByIdForUser(
+    id: string,
+    taskId: string,
+    userId: string,
+  ): Promise<number> {
+    if (!(await this.tasks.findById(userId, taskId))) {
+      return 0;
+    }
+    const index = this.attachments.findIndex(
+      (attachment) => attachment.id === id && attachment.taskId === taskId,
+    );
+    if (index === -1) {
+      return 0;
+    }
+    this.attachments.splice(index, 1);
+    return 1;
+  }
+
+  async deleteByTaskId(taskId: string, userId: string): Promise<number> {
+    if (!(await this.tasks.findById(userId, taskId))) {
+      return 0;
+    }
+    const before = this.attachments.length;
+    for (let index = this.attachments.length - 1; index >= 0; index -= 1) {
+      if (this.attachments[index].taskId === taskId) {
+        this.attachments.splice(index, 1);
+      }
+    }
+    return before - this.attachments.length;
+  }
+
+  private require(id: string): AttachmentRecord {
+    const attachment = this.attachments.find((candidate) => candidate.id === id);
+    if (!attachment) {
+      throw new Error(`Attachment ${id} not found`);
+    }
+    return attachment;
+  }
+
+  private replace(updated: AttachmentRecord): void {
+    const index = this.attachments.findIndex(
+      (attachment) => attachment.id === updated.id,
+    );
+    this.attachments[index] = updated;
+  }
+}
+
+export class InMemoryFileStorage implements FileStorage {
+  readonly objects = new Map<string, StoredObjectMetadata>();
+  readonly uploadUrls: string[] = [];
+  readonly deletedKeys: string[] = [];
+
+  async createUploadUrl(options: UploadUrlOptions): Promise<string> {
+    const url = `https://storage.test/${options.key}?upload=${options.expiresInSeconds}`;
+    this.uploadUrls.push(url);
+    return url;
+  }
+
+  async createDownloadUrl(options: DownloadUrlOptions): Promise<string> {
+    return `https://storage.test/${options.key}?download=${encodeURIComponent(options.fileName)}`;
+  }
+
+  async headObject(key: string): Promise<StoredObjectMetadata | null> {
+    return this.objects.get(key) ?? null;
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    this.deletedKeys.push(key);
+    this.objects.delete(key);
+  }
+
+  put(key: string, contentLength: number, contentType: string): void {
+    this.objects.set(key, { contentLength, contentType });
   }
 }
 

@@ -19,5 +19,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # Local S3-compatible storage for attachment development. Production uses
+  # a private AWS S3 bucket created by Terraform.
+  localstack:
+    image: localstack/localstack:3.8.1
+    container_name: taskapp-localstack
+    restart: unless-stopped
+    environment:
+      SERVICES: s3
+      DEBUG: 0
+      PERSISTENCE: 1
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "${LOCALSTACK_PORT:-4566}:4566"
+    volumes:
+      - taskapp-localstack-data:/var/lib/localstack
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init-s3.sh:ro
+
 volumes:
   taskapp-db-data:
+  taskapp-localstack-data:

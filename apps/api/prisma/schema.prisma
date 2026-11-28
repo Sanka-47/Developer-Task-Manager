@@ -23,6 +23,14 @@ enum TaskPriority {
   @@map("task_priority")
 }
 
+enum AttachmentStatus {
+  PENDING
+  UPLOADED
+  FAILED
+
+  @@map("attachment_status")
+}
+
 model User {
   id            String         @id @default(cuid())
   name          String
@@ -46,6 +54,7 @@ model Task {
   completedAt DateTime?    @map("completed_at")
   userId      String       @map("user_id")
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
 
@@ -54,6 +63,24 @@ model Task {
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, dueDate])
   @@map("tasks")
+}
+
+model Attachment {
+  id          String           @id @default(cuid())
+  taskId      String           @map("task_id")
+  task        Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  storageKey  String           @unique @map("storage_key")
+  fileName    String           @map("file_name")
+  contentType String           @map("content_type")
+  sizeBytes   Int              @map("size_bytes")
+  status      AttachmentStatus @default(PENDING)
+  uploadedAt  DateTime?        @map("uploaded_at")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@index([taskId, createdAt])
+  @@index([status])
+  @@map("attachments")
 }
 
 model RefreshToken {

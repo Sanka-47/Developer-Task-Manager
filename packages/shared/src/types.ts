@@ -1,4 +1,8 @@
-import type { TaskPriority, TaskStatus } from "./enums";
+import type {
+  AttachmentStatus,
+  TaskPriority,
+  TaskStatus,
+} from "./enums";
 
 /* -------------------------------------------------------------------------- */
 /*                                    Users                                   */
@@ -48,6 +52,33 @@ export interface PaginatedTasks {
 }
 
 /* -------------------------------------------------------------------------- */
+/*                                 Attachments                                */
+/* -------------------------------------------------------------------------- */
+
+export interface AttachmentDto {
+  id: string;
+  taskId: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  status: AttachmentStatus;
+  uploadedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateAttachmentResult {
+  attachment: AttachmentDto;
+  uploadUrl: string;
+  expiresAt: string;
+}
+
+export interface AttachmentDownloadUrl {
+  url: string;
+  expiresAt: string;
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                  Dashboard                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -76,6 +107,7 @@ export type ApiErrorCode =
   | "NOT_FOUND"
   | "CONFLICT"
   | "TOO_MANY_REQUESTS"
+  | "STORAGE_ERROR"
   | "INTERNAL_ERROR"
   | "NETWORK_ERROR";
 

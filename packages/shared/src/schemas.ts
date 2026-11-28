@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 import {
+  ATTACHMENT_CONTENT_TYPES,
   DEFAULT_PAGE_SIZE,
+  MAX_ATTACHMENT_BYTES,
   MAX_PAGE_SIZE,
   SORT_ORDERS,
   TASK_PRIORITIES,
@@ -120,6 +122,37 @@ export const taskQuerySchema = z.object({
 });
 
 /* -------------------------------------------------------------------------- */
+/*                                 Attachments                                */
+/* -------------------------------------------------------------------------- */
+
+export const attachmentTaskParamsSchema = z.object({
+  taskId: z.string().trim().min(1, "Task id is required"),
+});
+
+export const attachmentParamsSchema = attachmentTaskParamsSchema.extend({
+  attachmentId: z.string().trim().min(1, "Attachment id is required"),
+});
+
+export const createAttachmentSchema = z.object({
+  fileName: z
+    .string({ error: "File name is required" })
+    .trim()
+    .min(1, "File name is required")
+    .max(255, "File name must be at most 255 characters"),
+  contentType: z.enum(ATTACHMENT_CONTENT_TYPES, {
+    error: "Unsupported file type",
+  }),
+  sizeBytes: z
+    .number({ error: "File size is required" })
+    .int("File size must be a whole number of bytes")
+    .positive("File must not be empty")
+    .max(
+      MAX_ATTACHMENT_BYTES,
+      `File must be at most ${Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024))} MB`,
+    ),
+});
+
+/* -------------------------------------------------------------------------- */
 /*                                    Auth                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -163,5 +196,6 @@ export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
 export type UpdateTaskStatusInput = z.infer<typeof updateTaskStatusSchema>;
 export type TaskQuery = z.infer<typeof taskQuerySchema>;
+export type CreateAttachmentInput = z.infer<typeof createAttachmentSchema>;
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;

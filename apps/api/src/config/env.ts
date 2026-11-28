@@ -30,6 +30,49 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),
+
+  /* ---------------------------------------------------------------------- */
+  /*                            Object storage                              */
+  /* ---------------------------------------------------------------------- */
+  AWS_REGION: z.string().trim().min(1).default("eu-central-1"),
+  S3_BUCKET: z.string().trim().min(3).default("taskapp-attachments"),
+  S3_ENDPOINT_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional(),
+  ),
+  S3_PUBLIC_ENDPOINT_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().url().optional(),
+  ),
+  S3_FORCE_PATH_STYLE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  S3_KEY_PREFIX: z
+    .string()
+    .trim()
+    .regex(
+      /^[a-zA-Z0-9/_-]+$/,
+      "S3_KEY_PREFIX may only contain letters, numbers, /, _ and -",
+    )
+    .default("attachments"),
+  S3_UPLOAD_URL_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(3600)
+    .default(300),
+  S3_DOWNLOAD_URL_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(3600)
+    .default(300),
+  S3_MAX_FILE_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(25 * 1024 * 1024),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

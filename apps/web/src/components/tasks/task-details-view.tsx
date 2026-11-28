@@ -17,6 +17,7 @@ import {
 
 import { ErrorState } from "@/components/common/error-state";
 import { DeleteTaskDialog } from "@/components/tasks/delete-task-dialog";
+import { TaskAttachments } from "@/components/tasks/task-attachments";
 import { TaskFormDialog } from "@/components/tasks/task-form-dialog";
 import {
   TaskPriorityBadge,
@@ -158,6 +159,8 @@ export function TaskDetailsView() {
               )}
             </CardContent>
           </Card>
+
+          <TaskAttachments taskId={task.id} />
 
           <Card>
             <CardHeader>

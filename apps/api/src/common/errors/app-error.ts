@@ -52,3 +52,9 @@ export class TooManyRequestsError extends AppError {
     super(429, "TOO_MANY_REQUESTS", message);
   }
 }
+
+export class StorageError extends AppError {
+  constructor(message = "File storage is unavailable. Please try again.") {
+    super(502, "STORAGE_ERROR", message);
+  }
+}

@@ -18,17 +18,29 @@ import type {
   UpdateTaskData,
 } from "./task.repository";
 
+/**
+ * Narrow port used when a task is deleted. The attachment module owns S3
+ * cleanup; TaskService only needs to know that the operation must happen
+ * before the database cascade removes the metadata.
+ */
+export interface TaskAttachmentCleaner {
+  deleteAllForTask(userId: string, taskId: string): Promise<void>;
+}
+
 export interface TaskServiceDependencies {
   repository: ITaskRepository;
+  attachments?: TaskAttachmentCleaner;
   now?: () => Date;
 }
 
 export class TaskService {
   private readonly repository: ITaskRepository;
+  private readonly attachments?: TaskAttachmentCleaner;
   private readonly now: () => Date;
 
   constructor(dependencies: TaskServiceDependencies) {
     this.repository = dependencies.repository;
+    this.attachments = dependencies.attachments;
     this.now = dependencies.now ?? (() => new Date());
   }
 
@@ -99,6 +111,13 @@ export class TaskService {
   }
 
   async delete(userId: string, id: string): Promise<void> {
+    const existing = await this.repository.findById(userId, id);
+    if (!existing) {
+      throw new NotFoundError("Task not found");
+    }
+
+    await this.attachments?.deleteAllForTask(userId, id);
+
     const deletedCount = await this.repository.deleteById(userId, id);
     if (deletedCount === 0) {
       throw new NotFoundError("Task not found");
