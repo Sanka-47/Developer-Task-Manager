@@ -1,0 +1,142 @@
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Optional image tag to deploy. Defaults to the current commit SHA.
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+  PROJECT: taskapp
+  ENVIRONMENT: demo
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            TAG="${{ inputs.image_tag }}"
+          else
+            SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+            TAG="$(echo "$SHA" | cut -c1-7)"
+          fi
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+
+      - name: Build and push images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          API_REPO="$PROJECT-$ENVIRONMENT-api"
+          WEB_REPO="$PROJECT-$ENVIRONMENT-web"
+          MIGRATOR_REPO="$PROJECT-$ENVIRONMENT-migrator"
+
+          # ECR repositories use immutable tags. Re-running a workflow for the
+          # same commit must not try to overwrite an existing SHA tag.
+          if aws ecr describe-images --repository-name "$API_REPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "Image $API_REPO:$TAG already exists; skipping API build/push."
+          else
+            docker build -f Dockerfile.api --target runner -t "$REGISTRY/$API_REPO:$TAG" .
+            docker push "$REGISTRY/$API_REPO:$TAG"
+          fi
+
+          if aws ecr describe-images --repository-name "$MIGRATOR_REPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "Image $MIGRATOR_REPO:$TAG already exists; skipping migrator build/push."
+          else
+            docker build -f Dockerfile.api --target migrator -t "$REGISTRY/$MIGRATOR_REPO:$TAG" .
+            docker push "$REGISTRY/$MIGRATOR_REPO:$TAG"
+          fi
+
+          if aws ecr describe-images --repository-name "$WEB_REPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "Image $WEB_REPO:$TAG already exists; skipping web build/push."
+          else
+            docker build -f Dockerfile.web --target runner \
+              --build-arg API_ORIGIN=http://api:4200 \
+              -t "$REGISTRY/$WEB_REPO:$TAG" .
+            docker push "$REGISTRY/$WEB_REPO:$TAG"
+          fi
+
+      - name: Deploy through SSM
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          INSTANCE_ID="$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Project,Values=$PROJECT" \
+              "Name=tag:Environment,Values=$ENVIRONMENT" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)"
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "No running TaskApp instance found" >&2
+            exit 1
+          fi
+
+          COMMAND_ID="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy TaskApp $TAG" \
+            --parameters "commands=[\"/opt/taskapp/deploy.sh $TAG\"]" \
+            --query 'Command.CommandId' \
+            --output text)"
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json | tee /tmp/deploy-result.json
+
+          STATUS="$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query Status \
+            --output text)"
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "Deployment failed with status $STATUS" >&2
+            exit 1
+          fi
