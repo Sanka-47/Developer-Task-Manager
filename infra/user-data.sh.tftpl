@@ -1,0 +1,121 @@
+#!/bin/bash
+set -euo pipefail
+
+exec > >(tee -a /var/log/taskapp-bootstrap.log) 2>&1
+
+echo "Starting TaskApp bootstrap"
+
+dnf install -y docker awscli-2 amazon-ssm-agent
+systemctl enable --now docker
+systemctl enable --now amazon-ssm-agent
+usermod -aG docker ec2-user || true
+
+mkdir -p /usr/local/lib/docker/cli-plugins /opt/taskapp
+curl -fsSL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-$(uname -m)" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod 755 /usr/local/lib/docker/cli-plugins/docker-compose
+
+cat > /opt/taskapp/docker-compose.yml <<'COMPOSE'
+${compose_file}
+COMPOSE
+
+aws_region="${aws_region}"
+project="${project}"
+environment="${environment}"
+
+fetch_parameter() {
+  aws ssm get-parameter \
+    --region "$aws_region" \
+    --name "/$project/$environment/$1" \
+    --with-decryption \
+    --query Parameter.Value \
+    --output text
+}
+
+umask 077
+{
+  printf 'NODE_ENV=production\n'
+  printf 'PORT=4200\n'
+  printf 'DATABASE_URL=%s\n' "$(fetch_parameter DATABASE_URL)"
+  printf 'JWT_ACCESS_SECRET=%s\n' "$(fetch_parameter JWT_ACCESS_SECRET)"
+  printf 'S3_BUCKET=%s\n' "$(fetch_parameter S3_BUCKET)"
+  printf 'CORS_ORIGINS=%s\n' "$(fetch_parameter CORS_ORIGINS)"
+  printf 'AWS_REGION=%s\n' "$aws_region"
+  printf 'S3_KEY_PREFIX=attachments\n'
+  printf 'S3_UPLOAD_URL_TTL_SECONDS=300\n'
+  printf 'S3_DOWNLOAD_URL_TTL_SECONDS=300\n'
+  printf 'S3_MAX_FILE_BYTES=26214400\n'
+  printf 'LOG_LEVEL=info\n'
+} > /opt/taskapp/api.env
+chmod 600 /opt/taskapp/api.env
+
+cat > /opt/taskapp/.env <<EOF
+ECR_REGISTRY=${ecr_registry}
+API_REPO=${api_repo}
+WEB_REPO=${web_repo}
+MIGRATOR_REPO=${migrator_repo}
+IMAGE_TAG=${image_tag}
+AWS_REGION=${aws_region}
+LOG_GROUP_API=${log_group_api}
+LOG_GROUP_WEB=${log_group_web}
+EOF
+chmod 600 /opt/taskapp/.env
+
+cat > /opt/taskapp/deploy.sh <<'DEPLOY'
+#!/bin/bash
+set -euo pipefail
+
+TAG="$${1:?usage: deploy.sh <image-tag>}"
+cd /opt/taskapp
+
+set -a
+. /opt/taskapp/.env
+set +a
+
+export IMAGE_TAG="$TAG"
+sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$TAG/" /opt/taskapp/.env
+
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+docker compose -f /opt/taskapp/docker-compose.yml pull
+docker run --rm --env-file /opt/taskapp/api.env "$ECR_REGISTRY/$${MIGRATOR_REPO}:$TAG"
+docker run --rm --env-file /opt/taskapp/api.env "$ECR_REGISTRY/$${MIGRATOR_REPO}:$TAG" npx prisma db seed
+docker compose -f /opt/taskapp/docker-compose.yml up -d --remove-orphans --wait --wait-timeout 120
+DEPLOY
+chmod 755 /opt/taskapp/deploy.sh
+
+cd /opt/taskapp
+set -a
+. /opt/taskapp/.env
+set +a
+
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+if docker compose -f /opt/taskapp/docker-compose.yml pull; then
+  migrated=false
+  for attempt in $(seq 1 30); do
+    if docker run --rm --env-file /opt/taskapp/api.env "$ECR_REGISTRY/$${MIGRATOR_REPO}:$IMAGE_TAG"; then
+      migrated=true
+      break
+    fi
+    echo "Migration attempt $attempt failed; retrying in 10 seconds"
+    sleep 10
+  done
+
+  if [ "$migrated" != "true" ]; then
+    echo "Migrations failed after 30 attempts; containers were not started." >&2
+    exit 1
+  fi
+
+  if [ "${seed_demo_data}" = "true" ]; then
+    docker run --rm --env-file /opt/taskapp/api.env "$ECR_REGISTRY/$${MIGRATOR_REPO}:$IMAGE_TAG" npx prisma db seed || true
+  fi
+
+  docker compose -f /opt/taskapp/docker-compose.yml up -d --wait --wait-timeout 120
+else
+  echo "Images are not in ECR yet. Push the first images, then run /opt/taskapp/deploy.sh <git-sha>."
+fi
+
+echo "TaskApp bootstrap complete"
